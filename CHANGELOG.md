@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+**Widgets**
+- Custom HTML: **Web page address** shows a web page instead of your own HTML, such as a Home Assistant dashboard,
+  Grafana or a camera on the home network. Plain http addresses work too (the panel is now served over http inside
+  the app, so the page and its pictures are not blocked as mixed content). The page runs in its own origin and keeps
+  its sign-in, cannot reach the panel or navigate it away, and is not clipped to the card's rounded corners, because
+  Android WebView then drops the rounded corners the page draws itself.
+
 ## 0.9.30 — 2026-11-25
 
 - Windows 11 on ARM: native ARM64 agent ZIP and architecture-aware PowerShell setup (#602).
