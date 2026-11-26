@@ -32,6 +32,9 @@ public sealed class UpdateService(ConfigStore cfg, AdbReverse adb, IHostApplicat
     private long? _lastCheck;
     private string _state = "idle";
     private string? _error;
+
+    /// <summary>Fork: in-place updates (agent and phone app) are off; only tests of the installer turn them on.</summary>
+    internal bool InPlaceUpdatesAllowed { get; init; }
     // phones whose app update failed for _phoneRetryFor; kept apart from AppVersion, which any phone's request sets
     private volatile string[] _phoneRetry = [];
     private volatile string? _phoneRetryFor;
@@ -151,6 +154,14 @@ public sealed class UpdateService(ConfigStore cfg, AdbReverse adb, IHostApplicat
     /// <param name="automatic">Called by the once-a-minute loop: an app update that already failed for this release is not tried again by itself.</param>
     public async Task ApplyAsync(CancellationToken ct = default, bool automatic = false)
     {
+        // Fork: nothing is ever downloaded and installed in place, neither automatically nor from the Settings button.
+        // A published release would replace this build (and its changes) with one that was not reviewed here; update
+        // by pulling the fork and building it yourself.
+        if (!InPlaceUpdatesAllowed)
+        {
+            _error = "Updates are off in this build: pull the fork and build it yourself";
+            return;
+        }
         var s = Status();
         if (!s.AppUpdate && !s.AgentUpdate) return;
         if (!await _gate.WaitAsync(0, ct)) return;

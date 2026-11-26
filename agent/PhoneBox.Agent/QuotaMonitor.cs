@@ -97,6 +97,8 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
     private Func<string?>? KeychainReader()
     {
         if (ReadKeychain is not null) return ReadKeychain;
+        // Fork: never read Claude Code's Keychain item, even if ClaudeTickAsync is called again by a future change.
+        if (!AllowKeychainRead) return null;
 #if !WINDOWS
         if (OperatingSystem.IsMacOS() && CredentialsPath == DefaultCredentialsPath)
             return () => Sh.Run("security", "find-generic-password", "-s", "Claude Code-credentials", "-w")?.Trim();
@@ -455,8 +457,10 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
 
             try
             {
-                await ClaudeTickAsync(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ct);
-                await ExtraClaudeTickAsync(config?.Get().Claude.ExtraCredentialDirs ?? [], DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ct);
+                // Fork: Claude quota comes from the file Claude Code's status line writes, never from the OAuth
+                // token (~/.claude/.credentials.json or the Keychain) or api.anthropic.com. ClaudeTickAsync and
+                // ExtraClaudeTickAsync stay for their tests but are no longer called.
+                await ClaudeStatusLineTickAsync(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
             catch (Exception ex) { log.LogWarning("claude quota: {Msg}", ex.Message); } // never end the loop for Codex, Antigravity and Grok
@@ -502,7 +506,71 @@ public sealed partial class QuotaMonitor(ConfigStore config, ILogger<QuotaMonito
 
     private enum ClaudeResult { Ok, Limited, Refused, Offline, Unrecognized, Failed }
 
-    internal const string NoCliSignIn = "No Claude Code sign-in here; Claude Desktop doesn't share its own. Run claude to sign in";
+    /// <summary>Fork: Claude Code's Keychain item is never read (tests may still give their own reader).</summary>
+    private static readonly bool AllowKeychainRead = false;
+
+    /// <summary>
+    /// The subscription limits Claude Code hands to its status line (<c>rate_limits</c> on the status line's stdin),
+    /// saved by the status line script. Tests point it at a file of their own.
+    /// </summary>
+    internal string StatusLineLimitsPath { get; init; } = Path.Combine(Home, ".claude", "rate-limits.json");
+
+    internal const string NoStatusLineLimits =
+        "No limits yet: save rate_limits from Claude Code's status line to ~/.claude/rate-limits.json";
+
+    /// <summary>
+    /// One pass for Claude from the status line file: <c>{"five_hour":{"used_percentage":12,"resets_at":1764150000},
+    /// "seven_day":{...}}</c> (resets_at in Unix seconds). Claude Code refreshes it with each reply, so between sessions
+    /// it holds the last reading; a window whose reset time has passed is shown as reset (0 %).
+    /// </summary>
+    internal async Task ClaudeStatusLineTickAsync(long nowMs, CancellationToken ct)
+    {
+        string json;
+        long updatedAt;
+        try
+        {
+            var file = new FileInfo(StatusLineLimitsPath);
+            if (!file.Exists)
+            {
+                _claude = new QuotaProvider("claude", "Claude", "Claude", [], null, null, NoStatusLineLimits);
+                return;
+            }
+            json = await File.ReadAllTextAsync(file.FullName, ct);
+            updatedAt = new DateTimeOffset(file.LastWriteTimeUtc).ToUnixTimeMilliseconds();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return; } // being rewritten: next pass
+
+        var limits = ParseStatusLineLimits(json, nowMs);
+        _claude = limits.Count == 0
+            ? new QuotaProvider("claude", "Claude", "Claude", [], null, null, NoStatusLineLimits)
+            : new QuotaProvider("claude", "Claude", "Claude", limits, null, updatedAt, null);
+    }
+
+    /// <summary>The 5-hour and weekly limits of a status line <c>rate_limits</c> object; empty when it holds neither.</summary>
+    internal static List<QuotaLimit> ParseStatusLineLimits(string? json, long nowMs)
+    {
+        var list = new List<QuotaLimit>();
+        if (string.IsNullOrWhiteSpace(json)) return list;
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object) return list;
+            foreach (var (key, label, window) in new[] { ("five_hour", "5-hour session", 18000L), ("seven_day", "Weekly", 604800L) })
+            {
+                if (!root.TryGetProperty(key, out var o) || o.ValueKind != JsonValueKind.Object) continue;
+                var resetsAt = Num(o, "resets_at") is { } s ? (long)(s * 1000) : (long?)null;
+                var expired = resetsAt is { } r && r <= nowMs;
+                var pct = expired ? 0 : Math.Clamp(Num(o, "used_percentage") ?? 0, 0, 100);
+                list.Add(new QuotaLimit(label, pct, expired ? null : resetsAt, window,
+                    pct >= 95 ? "critical" : pct >= 80 ? "warning" : "normal"));
+            }
+        }
+        catch (JsonException) { list.Clear(); } // half-written by a status line without an atomic rename
+        return list;
+    }
+
+    internal const string NoCliSignIn ="No Claude Code sign-in here; Claude Desktop doesn't share its own. Run claude to sign in";
 
     /// <summary>One pass of the usage loop for Claude, at wall-clock time <paramref name="nowMs"/>.</summary>
     internal async Task ClaudeTickAsync(long nowMs, CancellationToken ct)

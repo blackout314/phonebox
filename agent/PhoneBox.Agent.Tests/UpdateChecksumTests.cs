@@ -263,7 +263,7 @@ b47da3d09583268d7bacef2d4375555313bf455af8a3ab16fd4d7ee95082826e  PhoneBoxAgent-
                 """;
 
             var httpField = typeof(UpdateService).GetField("_http", BindingFlags.Instance | BindingFlags.NonPublic)!;
-            var svc = new UpdateService(cfg, adb, new NoopLifetime(), NullLogger<UpdateService>.Instance) { DownloadsDir = Path.Combine(dir, "dl1") };
+            var svc = new UpdateService(cfg, adb, new NoopLifetime(), NullLogger<UpdateService>.Instance) { InPlaceUpdatesAllowed = true, DownloadsDir = Path.Combine(dir, "dl1") };
             httpField.SetValue(svc, new HttpClient(new FakeReleaseHandler(relJson, apkBytes, sums)));
 
             UpdateService.AppVersion = "0.0.1";
@@ -297,7 +297,7 @@ b47da3d09583268d7bacef2d4375555313bf455af8a3ab16fd4d7ee95082826e  PhoneBoxAgent-
             Assert.False(svc.Status().AppUpdate);
             Assert.Equal(ver, UpdateService.AppVersion);
 
-            var svc2 = new UpdateService(cfg, adb, new NoopLifetime(), NullLogger<UpdateService>.Instance) { DownloadsDir = Path.Combine(dir, "dl2") };
+            var svc2 = new UpdateService(cfg, adb, new NoopLifetime(), NullLogger<UpdateService>.Instance) { InPlaceUpdatesAllowed = true, DownloadsDir = Path.Combine(dir, "dl2") };
             httpField.SetValue(svc2, new HttpClient(new FakeReleaseHandler(relJson, apkBytes, sums, () => devicesField.SetValue(adb, Array.Empty<string>()))));
             UpdateService.AppVersion = "0.0.1";
             devicesField.SetValue(adb, new[] { "SER1" });
@@ -308,7 +308,7 @@ b47da3d09583268d7bacef2d4375555313bf455af8a3ab16fd4d7ee95082826e  PhoneBoxAgent-
 
             // A fails, B installs; B then reports the new app while A is unplugged. The next apply has nothing to
             // install, and A's update is still pending: the reason it failed must stay next to it.
-            var svc3 = new UpdateService(cfg, adb, new NoopLifetime(), NullLogger<UpdateService>.Instance) { DownloadsDir = Path.Combine(dir, "dl3") };
+            var svc3 = new UpdateService(cfg, adb, new NoopLifetime(), NullLogger<UpdateService>.Instance) { InPlaceUpdatesAllowed = true, DownloadsDir = Path.Combine(dir, "dl3") };
             httpField.SetValue(svc3, new HttpClient(new FakeReleaseHandler(relJson, apkBytes, sums)));
             File.WriteAllText(modePath, "SERA");
             UpdateService.AppVersion = "0.0.1";
@@ -381,7 +381,7 @@ b47da3d09583268d7bacef2d4375555313bf455af8a3ab16fd4d7ee95082826e  PhoneBoxAgent-
                   ]
                 }
                 """;
-            var svc = new UpdateService(cfg, adb, new NoopLifetime(), NullLogger<UpdateService>.Instance) { DownloadsDir = Path.Combine(dir, "dl") };
+            var svc = new UpdateService(cfg, adb, new NoopLifetime(), NullLogger<UpdateService>.Instance) { InPlaceUpdatesAllowed = true, DownloadsDir = Path.Combine(dir, "dl") };
             typeof(UpdateService).GetField("_http", BindingFlags.Instance | BindingFlags.NonPublic)!
                 .SetValue(svc, new HttpClient(new FakeReleaseHandler(relJson, apkBytes, sums)));
 

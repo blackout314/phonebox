@@ -342,8 +342,10 @@ public sealed class LanConfig
 public sealed class UpdateConfig
 {
     /// <summary>Install new GitHub releases automatically (phone app over USB, agent in place).</summary>
-    public bool Auto { get; set; } = true;
-    public string Repo { get; set; } = "ersinkoc/phonebox";
+    // Fork: off by default, and UpdateService never installs in place anyway (InPlaceUpdatesAllowed).
+    public bool Auto { get; set; } = false;
+    // Fork: the version check looks at this fork's releases, not upstream's.
+    public string Repo { get; set; } = "blackout314/phonebox";
 }
 
 public sealed class ClaudeConfig

@@ -984,7 +984,9 @@ app.MapGet("/api/claude/hook", (ConfigStore cfg) =>
     // installed while any file has it, so Remove stays reachable when another file couldn't be written
     return Results.Json(new { installed = targets.Any(t => t.Installed), path = ClaudeHook.SettingsPath, paths = targets });
 });
-app.MapPost("/api/claude/hook", (ConfigStore cfg) => ClaudeHook.Configure(true, Port, cfg.Get().Claude.TimeoutSec, cfg.Get().Claude.ExtraCredentialDirs) is { } err ? Results.BadRequest(new { error = err }) : Results.Ok());
+// Fork: AI-agent permission hooks are never installed: they route every tool approval through the local,
+// unauthenticated port, where any process could approve it. Removing one (MapDelete) still works.
+app.MapPost("/api/claude/hook", () => Results.BadRequest(new { error = HookInstallDisabled }));
 app.MapDelete("/api/claude/hook", (ConfigStore cfg) => ClaudeHook.Configure(false, Port, cfg.Get().Claude.TimeoutSec, cfg.Get().Claude.ExtraCredentialDirs) is { } err ? Results.BadRequest(new { error = err }) : Results.Ok());
 
 // The recent messages and steps of one running Claude Code session, for the phone's session details. Off until the user
@@ -1009,7 +1011,7 @@ app.MapPost(CodexHook.Endpoint, async (HttpRequest req, ConfigStore cfg, Approva
     return output is null ? Results.Text("") : Results.Json(output);
 });
 app.MapGet("/api/codex/hook", () => Results.Json(new { installed = CodexHook.Installed(), path = CodexHook.HooksPath }));
-app.MapPost("/api/codex/hook", (ConfigStore cfg) => CodexHook.Configure(true, Port, cfg.Get().Claude.TimeoutSec) is { } err ? Results.BadRequest(new { error = err }) : Results.Ok());
+app.MapPost("/api/codex/hook", () => Results.BadRequest(new { error = HookInstallDisabled }));
 app.MapDelete("/api/codex/hook", (ConfigStore cfg) => CodexHook.Configure(false, Port, cfg.Get().Claude.TimeoutSec) is { } err ? Results.BadRequest(new { error = err }) : Results.Ok());
 
 // Cursor beforeShellExecution / beforeMCPExecution hooks (local only): the same phone decision in Cursor's own shape.
@@ -1024,7 +1026,7 @@ app.MapPost(CursorHook.Endpoint, async (HttpRequest req, ConfigStore cfg, Approv
 // installing in the distros (projects opened over Remote - WSL run their hooks there) follows "Also watch Cursor in
 // WSL"; the distros installed to are recorded, so status and removal still find a hook there after turning it off
 app.MapGet("/api/cursor/hook", (ConfigStore cfg) => Results.Json(CursorHook.Status(cfg.Get().Cursor.WatchWsl)));
-app.MapPost("/api/cursor/hook", (ConfigStore cfg) => CursorHook.ConfigureAll(true, Port, cfg.Get().Claude.TimeoutSec, cfg.Get().Cursor.WatchWsl) is { } err ? Results.BadRequest(new { error = err }) : Results.Ok());
+app.MapPost("/api/cursor/hook", () => Results.BadRequest(new { error = HookInstallDisabled }));
 app.MapDelete("/api/cursor/hook", (ConfigStore cfg) => CursorHook.ConfigureAll(false, Port, cfg.Get().Claude.TimeoutSec, cfg.Get().Cursor.WatchWsl) is { } err ? Results.BadRequest(new { error = err }) : Results.Ok());
 
 // WorkBuddy answers the same Claude-protocol PermissionRequest hook; its settings file is ~/.workbuddy/settings.json
@@ -1038,7 +1040,7 @@ app.MapPost(WorkBuddyHook.Endpoint, async (HttpRequest req, ConfigStore cfg, App
     return output is null ? Results.Text("") : Results.Json(output);
 });
 app.MapGet("/api/workbuddy/hook", () => Results.Json(new { installed = WorkBuddyHook.Installed(), path = WorkBuddyHook.SettingsPath }));
-app.MapPost("/api/workbuddy/hook", (ConfigStore cfg) => WorkBuddyHook.Configure(true, Port, cfg.Get().WorkBuddy.TimeoutSec) is { } err ? Results.BadRequest(new { error = err }) : Results.Ok());
+app.MapPost("/api/workbuddy/hook", () => Results.BadRequest(new { error = HookInstallDisabled }));
 app.MapDelete("/api/workbuddy/hook", (ConfigStore cfg) => WorkBuddyHook.Configure(false, Port, cfg.Get().WorkBuddy.TimeoutSec) is { } err ? Results.BadRequest(new { error = err }) : Results.Ok());
 
 // Permission prompts waiting for the phone (posted by an AI coding agent hook).
@@ -1276,6 +1278,10 @@ internal sealed record PairClaim(string? Code);
 
 public partial class Program
 {
+    /// <summary>Fork: the answer of every hook install endpoint (Claude Code, Codex, Cursor, WorkBuddy).</summary>
+    internal const string HookInstallDisabled =
+        "This build never installs AI-agent permission hooks: approvals would go through an unauthenticated local port";
+
     internal static bool LanPortCollidesWithLocal(string json, int localPort)
     {
         try
