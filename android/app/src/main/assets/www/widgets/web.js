@@ -15,8 +15,10 @@ W.hackernews = {
         let data = store.get('nc:' + key, null);
         if (!data || Date.now() - data.at > 15 * 60_000) {
           const ids = (await cached('hn-ids', 'https://hacker-news.firebaseio.com/v0/topstories.json', 15 * 60_000)).slice(0, 15);
-          const items = await Promise.all(ids.map((id) => safeFetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`).then((r) => r.json()).catch(() => null)));
-          data = { at: Date.now(), data: items.filter(Boolean).map((i) => ({ t: i.title, u: i.url, s: i.score, c: i.descendants || 0 })) };
+          const items = await Promise.all(ids.map((id) => safeFetch(`https://hacker-news.firebaseio.com/v0/item/${id}.json`).then((r) => (r.ok ? r.json() : null)).catch(() => null)));
+          // an error answer (the agent restarting, the proxy refusing) is no story: never cache a list without titles
+          data = { at: Date.now(), data: items.filter((i) => i && i.title).map((i) => ({ t: i.title, u: i.url, s: i.score, c: i.descendants || 0 })) };
+          if (!data.data.length) throw new Error('no stories'); // shows "offline" and tries again, instead of 15 empty minutes
           store.set('nc:' + key, data);
         }
         box.querySelector('.w-sub').textContent = ago(data.at);
