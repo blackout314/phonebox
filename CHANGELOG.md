@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+**Widgets**
+- **Home Assistant dashboard**: a Home Assistant dashboard as it is, with its own cards. The phone opens it from the
+  server in Settings › General (or an address of its own) and signs in with the token from there, the way Home
+  Assistant's own app does: no password on the phone and no trusted network (or, per widget, with Home Assistant's
+  own sign-in). The agent gives the token only to such a widget, and the app only to that server's pages. The widget
+  hides Home Assistant's header and sidebar with kiosk-mode, and its settings list the dashboards and views to pick
+  from, with what Home Assistant needs. While the server
+  does not answer, the widget says so and tries again. See [docs/HOME-ASSISTANT.md](docs/HOME-ASSISTANT.md).
+- Custom HTML: **Web page address** shows a web page instead of your own HTML, such as a Home Assistant dashboard,
+  Grafana or a camera on the home network. Plain http addresses work too (the panel is now served over http inside
+  the app, so the page and its pictures are not blocked as mixed content). The page runs in its own origin and keeps
+  its sign-in, cannot reach the panel or navigate it away, and is not clipped to the card's rounded corners, because
+  Android WebView then drops the rounded corners the page draws itself.
+
 ## 0.9.30 — 2026-11-25
 
 - Windows 11 on ARM: native ARM64 agent ZIP and architecture-aware PowerShell setup (#602).

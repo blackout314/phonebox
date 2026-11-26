@@ -58,7 +58,8 @@ import java.util.Locale
  * Full-screen desk panel. The UI is plain HTML/JS bundled in assets/www.
  * The UI calls "/agent/..." URLs; they are intercepted here and forwarded to the PhoneBox agent on the PC,
  * over USB (adb reverse) or, once paired, over Wi-Fi / Tailscale (see AgentLink). The WebView itself therefore
- * never makes local-network requests (no CORS, mixed-content or local-network-access issues).
+ * never makes local-network requests for the panel (no CORS, mixed-content or local-network-access issues); only a web
+ * page that a Custom HTML widget shows by address loads from the network, in its own frame and origin.
  */
 class MainActivity : Activity(), SensorEventListener {
 
@@ -88,6 +89,11 @@ class MainActivity : Activity(), SensorEventListener {
 
     private val assetLoader by lazy {
         WebViewAssetLoader.Builder()
+            // The panel is served over http: a web page shown by address (Custom HTML widget) may be plain http on the
+            // home network, and inside an https panel WebView would block its images as mixed content. The panel never
+            // goes to the network (the asset loader answers), uses no API that needs a secure context, and the agent
+            // calls are still guarded by the key only the panel receives.
+            .setHttpAllowed(true)
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .build()
     }
@@ -448,7 +454,10 @@ class MainActivity : Activity(), SensorEventListener {
             mediaPlaybackRequiresUserGesture = false
             cacheMode = WebSettings.LOAD_NO_CACHE
             textZoom = 100
+            // a web page shown by address may be plain http, and may need its own cookies (a sign-in)
+            mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
         }
+        android.webkit.CookieManager.getInstance().setAcceptThirdPartyCookies(web, true)
         web.isVerticalScrollBarEnabled = false
         web.isHorizontalScrollBarEnabled = false
         web.webChromeClient = object : WebChromeClient() {
@@ -466,21 +475,26 @@ class MainActivity : Activity(), SensorEventListener {
                 val r = assetLoader.shouldInterceptRequest(url)
                 // the panel is made of ES modules, which need a JavaScript MIME type
                 if (r != null && url.path?.endsWith(".js") == true) r.mimeType = "text/javascript"
+                // The panel's own host never goes to the network: over plain http someone on the network could answer
+                // it, and such a page would run in the panel's origin (with the bridge key).
+                if (r == null && url.host == ASSET_HOST) return FORBIDDEN()
                 return r
             }
 
             // Old WebView without document-start scripts: hand the bridge key to the main frame only (evaluateJavascript
             // never runs in iframes), and only when it shows the panel. Bridge calls before it arrives get nothing.
             override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) = giveKey(view, url)
-            override fun onPageFinished(view: WebView, url: String?) = giveKey(view, url)
+            override fun onPageFinished(view: WebView, url: String?) {
+                if (storageMove != 0) moveStorageStep(view, url) else giveKey(view, url)
+            }
         }
         if (documentStartKey)
-            WebViewCompat.addDocumentStartJavaScript(web, panelBootstrap(), setOf("https://$ASSET_HOST"))
+            WebViewCompat.addDocumentStartJavaScript(web, panelBootstrap(), setOf(PANEL_ORIGIN))
         web.addJavascriptInterface(Bridge(), "Android")
         // Lets you debug the panel from the computer via chrome://inspect.
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
 
-        web.loadUrl("https://$ASSET_HOST/assets/www/index.html")
+        if (panelPreferences.getBoolean(STORAGE_MOVED, false)) loadPanel() else moveStorage()
         hideSystemUi()
         if (savedInstanceState == null) standbyNoteAgentWake(intent)   // not again after a configuration change
         handlePairingLink(intent)
@@ -759,8 +773,44 @@ class MainActivity : Activity(), SensorEventListener {
         return "window.__phoneboxKey='$bridgeKey';window.__phoneboxLanguages=$languages;"
     }
 
+    private fun loadPanel() = web.loadUrl("$PANEL_ORIGIN/assets/www/index.html")
+
+    // The panel used to be served from https://$ASSET_HOST. Its localStorage (the settings kept for an offline start,
+    // counters, timers, checklists) belongs to that origin, so it is copied over once, before the panel first starts on
+    // http: read on an empty page of the old origin, written on one of the new, keeping anything already there.
+    private var storageMove = 0 // 1: reading the old origin, 2: writing to the new one, 0: done
+    private var movedStorage = "null"
+
+    private fun moveStorage() {
+        storageMove = 1
+        web.loadUrl("https://$ASSET_HOST/assets/www/storage-move.html")
+    }
+
+    private fun moveStorageStep(view: WebView, url: String?) {
+        if (storageMove == 1 && url?.startsWith("https://$ASSET_HOST/") == true) {
+            storageMove = 2
+            view.evaluateJavascript("JSON.stringify(Object.fromEntries(Object.keys(localStorage).map((k) => [k, localStorage.getItem(k)])))") { saved ->
+                if (destroyed) return@evaluateJavascript
+                movedStorage = saved ?: "null" // a JSON string literal holding the JSON of the entries, or null
+                view.loadUrl("$PANEL_ORIGIN/assets/www/storage-move.html")
+            }
+        } else if (storageMove == 2 && url?.startsWith("$PANEL_ORIGIN/") == true) {
+            storageMove = 0
+            val write = "(() => { try { const old = JSON.parse($movedStorage) || {};" +
+                " for (const [k, v] of Object.entries(old)) if (localStorage.getItem(k) === null) localStorage.setItem(k, v);" +
+                " return true; } catch (_) { return false; } })()"
+            view.evaluateJavascript(write) { written ->
+                if (destroyed) return@evaluateJavascript
+                // done only when the old entries were read and all written; otherwise the next start tries again (it
+                // never overwrites what the new origin already has)
+                if (movedStorage != "null" && written == "true") panelPreferences.edit().putBoolean(STORAGE_MOVED, true).apply()
+                loadPanel()
+            }
+        }
+    }
+
     private fun giveKey(view: WebView, url: String?) {
-        if (!documentStartKey && url?.startsWith("https://$ASSET_HOST/") == true)
+        if (!documentStartKey && url?.startsWith("$PANEL_ORIGIN/") == true)
             view.evaluateJavascript(panelBootstrap(), null)
     }
 
@@ -992,10 +1042,75 @@ class MainActivity : Activity(), SensorEventListener {
 
         @JavascriptInterface
         fun cancelListening(key: String, id: Int) { if (ok(key) && id > 0) dictation.cancel(id) }
+
+        /**
+         * Home Assistant dashboard widget: signs its dashboard in with [token] (a Home Assistant access token from the
+         * agent) the way the Home Assistant app does. Home Assistant's frontend asks window.externalApp for a token
+         * when that object exists ("external auth"); a document-start script defines it only in frames of [origins]
+         * (a JSON array of the server's origins), only inside the panel (never as the top page), and only for a page
+         * opened with external_auth=1, which the widget adds when it signs in this way: a widget that uses Home
+         * Assistant's own sign-in on the same server gets no token. Origins of several widgets add up while the token
+         * is the same; another token (another computer, a new token in Settings) starts over, so a server registered
+         * for one token never gets another. True once the script is in place (the widget then loads its frame); false
+         * when this WebView cannot do it, and the widget shows Home Assistant's own sign-in instead.
+         */
+        @JavascriptInterface
+        fun haSignIn(key: String, origins: String, token: String): Boolean {
+            if (!ok(key) || !documentStartKey || token.isBlank() || token.length > 4096) return false
+            val rules = try {
+                JSONArray(origins).let { list -> (0 until list.length()).map { list.getString(it) } }.filter { HA_ORIGIN.matches(it) }.toSet()
+            } catch (_: Exception) { return false }
+            if (rules.isEmpty()) return false
+            val done = java.util.concurrent.CountDownLatch(1)
+            var added = false
+            runOnUiThread {
+                try {
+                    if (!destroyed) {
+                        // every widget's servers while the token is the same (they all use the token from Settings);
+                        // a new token starts over
+                        if (token != haSignInToken) { haSignInOrigins.clear(); haSignInToken = token }
+                        haSignInOrigins += rules
+                        haSignInScript?.remove()
+                        haSignInScript = WebViewCompat.addDocumentStartJavaScript(web, haSignInBootstrap(token), haSignInOrigins.toSet())
+                        added = true
+                    }
+                } catch (_: Exception) {
+                } finally { done.countDown() }
+            }
+            return done.await(3, java.util.concurrent.TimeUnit.SECONDS) && added
+        }
     }
+
+    private var haSignInScript: androidx.webkit.ScriptHandler? = null
+    private val haSignInOrigins = mutableSetOf<String>()
+    private var haSignInToken = ""
+
+    // Home Assistant's external auth (frontend src/external_app/external_auth.ts): it calls
+    // externalApp.getExternalAuth('{"callback":"externalAuthSetToken"}') and waits for window[callback](true, tokens).
+    // There is no externalBus, so the frontend does not expect the app's other messages.
+    private fun haSignInBootstrap(token: String) = """
+        (() => {
+          if (window.top === window || !new URLSearchParams(location.search).has('external_auth')) return;
+          const token = ${JSONObject.quote(token)};
+          const reply = (payload, ok, data) => {
+            let name = '';
+            try { name = String(JSON.parse(payload).callback || ''); } catch (_) { return; }
+            if (!/^externalAuth\w+$/.test(name)) return;
+            setTimeout(() => { if (typeof window[name] === 'function') window[name](ok, data); });
+          };
+          window.externalApp = {
+            getExternalAuth: (payload) => reply(payload, true, { access_token: token, expires_in: 1800 }),
+            revokeExternalAuth: (payload) => reply(payload, true),
+          };
+        })();
+    """.trimIndent()
 
     companion object {
         private const val ASSET_HOST = "appassets.androidplatform.net"
+        private const val PANEL_ORIGIN = "http://$ASSET_HOST"
+        private const val STORAGE_MOVED = "storage-moved-to-http"
+        // a Home Assistant server origin the dashboard widget may sign in: scheme, host (or [IPv6]) and port, no path
+        private val HA_ORIGIN = Regex("""^https?://(\[[0-9A-Fa-f:.]+\]|[A-Za-z0-9.-]+)(:[0-9]{1,5})?$""")
         private val NO_STORE = mapOf("Cache-Control" to "no-store")
         private const val PANEL_HEADER = "X-PhoneBox-Panel"
         private val READ_ONLY_IMAGES = setOf("/agent/api/art", "/agent/api/procs/icon", "/agent/api/controls/radio-logo", "/agent/api/apps/icon", "/agent/api/discord/img", "/agent/api/shortcuts/icon",

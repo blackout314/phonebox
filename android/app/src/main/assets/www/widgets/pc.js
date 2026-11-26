@@ -15,10 +15,32 @@ goto:function(p){parent.postMessage({phonebox:'goto',page:p},'*')}};
 addEventListener('message',function(e){var m=e.data;if(!m||m.phonebox!=='data')return;data[m.kind]=m.value;(subs[m.kind]||[]).forEach(function(f){try{f(m.value)}catch(err){console.error(err)}})});})();<\/script>`;
 export const HTML_KINDS = ['state', 'push', 'weather', 'work', 'quotas'];
 
+const httpUrl = (v) => (typeof v === 'string' && /^https?:\/\/[^\s]+$/i.test(v.trim()) ? v.trim() : '');
+
+// A web page by address (http or https), in a frame of its own: it loads in its own origin, so it keeps its storage and
+// cookies (a sign-in) yet cannot reach the panel, and it may not navigate the panel away. No popups either: the app has
+// no second window, so a link opening one would replace the panel.
+function webFrame(box, url) {
+  const frame = h('iframe', 'html-frame');
+  frame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-forms allow-modals allow-downloads');
+  frame.setAttribute('allow', 'fullscreen; autoplay');
+  frame.src = url;
+  // Not clipped by the card's rounded corners: Android WebView then drops the page's own rounded clips (cards
+  // of a Home Assistant dashboard draw their graphs and blurred art as plain rectangles).
+  box.classList.add('url-html');
+  box.append(frame);
+  return frame;
+}
+
 W.html = {
   needs: HTML_KINDS,
   create(box, { o }) {
     if (o.transparent) box.classList.add('bare-html');
+    const url = httpUrl(o.url);
+    if (url) {
+      webFrame(box, url);
+      return { update() {}, destroy() {} };
+    }
     const frame = h('iframe', 'html-frame');
     frame.setAttribute('sandbox', 'allow-scripts');
     frame.setAttribute('referrerpolicy', 'no-referrer');
@@ -36,6 +58,83 @@ W.html = {
       update(kind) { if (HTML_KINDS.includes(kind)) send(kind); },
       destroy() { window.removeEventListener('message', onMsg); },
     };
+  },
+};
+
+// A Home Assistant dashboard as it is: the phone opens the server itself (the address in Settings › General, or the
+// widget's own). Until the server answers, the widget says so and keeps trying; when it answers again after an outage,
+// the page is reloaded. Without an address of its own the widget tries the one from Settings first, then the IP
+// addresses the computer found for a .local name: the computer may be on another network than the phone, so the first
+// one that answers is used.
+// Sign-in ("signIn"): by default with the token from Settings › General. The agent hands it only to this widget, and
+// the app gives it to Home Assistant's frontend the way the Home Assistant app does (MainActivity.haSignIn): no
+// password, no trusted network. "ha" leaves it to Home Assistant (its sign-in page, or a trusted network). Where the
+// app cannot (an old WebView, the browser preview), Home Assistant's own sign-in shows.
+// "kiosk" adds ?kiosk, which kiosk-mode (a Home Assistant add-on) reads to hide the header and the sidebar in this
+// frame only; without kiosk-mode it does nothing.
+const HA_DASH_PATH = /^[\w.~-]+(\/[\w.~-]+)*$/;
+W.hadash = {
+  needs: [],
+  create(box, { o, page: panelPage, w }) {
+    if (o.transparent !== false) box.classList.add('bare-html');
+    const own = httpUrl(o.address);
+    const bases = [...new Set((own ? [own] : [cfg.homeAssistant?.url, ...(cfg.homeAssistant?.alternatives || [])])
+      .map(httpUrl).filter(Boolean).map((b) => b.replace(/\/+$/, '')))];
+    const message = (text) => box.replaceChildren(h('div', 'empty', text));
+    if (!bases.length) { message(t('w.hadash.setup')); return { update() {}, destroy() {} }; }
+    const path = String(o.dashboard || '').trim().replace(/^\/+|\/+$/g, '');
+    const page = '/' + (HA_DASH_PATH.test(path) ? path : 'lovelace');
+    // ?kiosk for kiosk-mode; external_auth=1 only once the app holds the token: the app hands it only to a page opened
+    // with it, and Home Assistant then asks the app instead of showing its sign-in page
+    let external = false;
+    const query = () => { const q = [o.kiosk !== false ? 'kiosk' : '', external ? 'external_auth=1' : ''].filter(Boolean).join('&'); return q ? '?' + q : ''; };
+    // 'ok' once the app holds the token (or when Home Assistant signs in itself), 'missing' without a token in Settings,
+    // '' while not known yet: the agent is asked again on the next check
+    let signIn = o.signIn === 'ha' || !bridge?.haSignIn ? 'ok' : '';
+    const signInNow = async () => {
+      try {
+        const r = await fetch(`${API}/ha/frame-sign-in?widget=${encodeURIComponent(`${panelPage.id}/${w.id}`)}`, { cache: 'no-store', headers: PANEL_HEADERS });
+        if (r.status === 409) { signIn = 'missing'; return; }
+        const token = r.ok ? (await r.json()).token : '';
+        if (!token) return;
+        const origins = [...new Set(bases.map((b) => { try { return new URL(b).origin; } catch (_) { return ''; } }).filter(Boolean))];
+        external = bridge.haSignIn(JSON.stringify(origins), token) === true; // false: an old WebView, and Home Assistant's own sign-in shows
+        signIn = 'ok';
+      } catch (_) {}
+    };
+    // a no-cors request: it fails only when the server cannot be reached, which is all this needs to know
+    const answers = async (base) => {
+      const abort = new AbortController();
+      const stop = setTimeout(() => abort.abort(), 8000);
+      try { await fetch(base + '/manifest.json', { mode: 'no-cors', cache: 'no-store', signal: abort.signal }); return true; } catch (_) { return false; } finally { clearTimeout(stop); }
+    };
+    let frame = null, shown = '', down = false, timer = 0, gone = false;
+    const check = async () => {
+      if (gone) return;
+      if (signIn !== 'ok') await signInNow();
+      if (gone) return;
+      if (signIn === 'missing') {
+        message(t('w.hadash.noToken'));
+        frame = null;
+        signIn = '';
+        timer = setTimeout(check, 60000);
+        return;
+      }
+      // the address in use first, then the others in order
+      let up = '';
+      for (const base of shown ? [shown, ...bases.filter((b) => b !== shown)] : bases) {
+        if (await answers(base)) { up = base; break; }
+        if (gone) return;
+      }
+      if (gone) return;
+      if (up && signIn === 'ok' && (!frame || down || up !== shown)) { box.replaceChildren(); frame = webFrame(box, up + page + query()); shown = up; }
+      else if (up && signIn !== 'ok') { message(t('w.hadash.signIn')); frame = null; } // the computer has not given the token yet
+      else if (!up && !frame) message(t('w.hadash.offline'));
+      down = !up;
+      timer = setTimeout(check, up && signIn === 'ok' ? 60000 : 15000);
+    };
+    check();
+    return { update() {}, destroy() { gone = true; clearTimeout(timer); } };
   },
 };
 

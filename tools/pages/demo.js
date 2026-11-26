@@ -146,6 +146,9 @@
       // bridge: the agent says whether this computer has a phone bridge (macOS) and whether its switch is on; the demo has
       // none, so only a config that sets it carries it (see bridge-overview.spec.js)
       ...(c.bridge ? { bridge: { clipboard: !!c.bridge.clipboard, supported: c.bridge.supported === true } } : {}),
+      // like the agent: the Home Assistant address (never the token), only while a page has a Home Assistant dashboard widget
+      homeAssistant: (c.pages || []).some((p) => (p.widgets || []).some((w) => w.type === 'hadash' || (w.type === 'stack' && (w.options?.widgets || []).some((x) => x.type === 'hadash')))) ? // like the agent: also a Smart Stack card
+        { url: c.homeAssistant?.url ?? null, alternatives: c.homeAssistant?.alternatives ?? [] } : null, // alternatives: what the agent finds for a .local name
     };
   }
 
@@ -847,6 +850,16 @@
       return obsAct(path.slice(9), q.get('scene')) ? json({ ok: true }) : json({ error: 'unknown action' }, 400);
     }
     if (path === '/api/ha/entities') return json({ configured: true, error: null, entities: Object.keys(ha).sort().map((id) => ({ id, name: ha[id].name, switchable: /^(light|switch|lock|scene)\./.test(id) })) });
+    if (path === '/api/ha/dashboards') return json({ configured: true, error: null, phoneUrl: (await config()).homeAssistant?.url || 'http://192.168.1.10:8123', views: [
+      { path: 'lovelace/0', name: 'Overview › Home' }, { path: 'desk-panel/home', name: 'Desk panel › Home' }, { path: 'desk-panel/climate', name: 'Desk panel › Climate' }] });
+    // like the agent (HomeAssistant.FrameSignIn): the token, only for a dashboard widget of a page that signs in with it
+    if (path === '/api/ha/frame-sign-in') {
+      const c = await config();
+      const wdg = panelWidget(c, q.get('widget'), 'hadash'); // an enabled page of this phone, also a Smart Stack card
+      if (!wdg) return json({ error: "this Home Assistant dashboard widget isn't on an enabled page of this phone" }, 404);
+      if ((wdg.options?.signIn ?? 'token') !== 'token') return json({ error: "this widget uses Home Assistant's own sign-in" }, 403);
+      return c.homeAssistant?.token ? json({ token: c.homeAssistant.token }) : json({ error: 'no Home Assistant token in Settings › General' }, 409);
+    }
     if (path === '/api/ha/states') return json(haStates((q.get('ids') || '').split(',').filter(Boolean)));
     if (path.startsWith('/api/ha/toggle/') && method === 'POST') { haToggle(decodeURIComponent(path.slice(15))); return json({ ok: true }); }
     if (path.startsWith('/api/docker/') && method === 'POST') {

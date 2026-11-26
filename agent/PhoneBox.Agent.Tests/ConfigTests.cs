@@ -428,6 +428,62 @@ public class ConfigTests
         Assert.Contains("\"T\"", json);
     }
 
+    // The Home Assistant dashboard widget opens the server from the phone: the phone gets the address, only while one of
+    // its pages has such a widget (also inside a Smart Stack), and never the token.
+    [Theory]
+    [InlineData("""{ "type": "hadash", "x": 0, "y": 0, "w": 12, "h": 6 }""", true)]
+    [InlineData("""{ "type": "stack", "x": 0, "y": 0, "w": 6, "h": 3, "options": { "widgets": [ { "id": "a", "type": "hadash" } ] } }""", true)]
+    [InlineData("""{ "type": "ha", "x": 0, "y": 0, "w": 6, "h": 3 }""", false)]
+    public void ThePhoneGetsTheHomeAssistantAddressOnlyForADashboardWidget(string widget, bool sent)
+    {
+        var c = Load($$"""
+        { "homeAssistant": { "url": "http://192.168.1.10:8123", "token": "secret-ha-token" },
+          "pages": [ { "id": "p", "title": "P", "widgets": [ {{widget}} ] } ] }
+        """);
+        var pub = JsonSerializer.SerializeToElement(c.ToPublic(), ConfigStore.WriteOpts);
+        Assert.DoesNotContain("secret-ha-token", pub.GetRawText());
+        var ha = pub.TryGetProperty("homeAssistant", out var x) ? x : default;
+        if (sent) Assert.Equal("http://192.168.1.10:8123", ha.GetProperty("url").GetString());
+        else Assert.True(ha.ValueKind is JsonValueKind.Null or JsonValueKind.Undefined);
+    }
+
+    // Some Android versions cannot find a .local name (mDNS) in a WebView: the phone may also try the addresses the name
+    // has on this computer (after the name itself: this computer may be on another network than the phone).
+    [Theory]
+    [InlineData("http://homeassistant.local:8123", "http://192.168.1.10:8123|http://172.31.0.5:8123")]
+    [InlineData("http://homeassistant.local:8123/", "http://192.168.1.10:8123/|http://172.31.0.5:8123/")]
+    [InlineData("https://HA.local", "https://192.168.1.10|https://172.31.0.5")]
+    [InlineData("http://192.168.1.20:8123", "")]           // an address needs nothing else
+    [InlineData("https://ha.example.com", "")]             // nor does a name in DNS
+    [InlineData("homeassistant.local:8123", "")]           // not a URL
+    public void ALocalNameComesWithTheAddressesItHasHere(string url, string expected) =>
+        Assert.Equal(expected, string.Join('|', HaAddress.Alternatives(url, host => host.EndsWith(".local", StringComparison.OrdinalIgnoreCase) ? ["192.168.1.10", "172.31.0.5"] : [])));
+
+    [Fact]
+    public void ALocalNameThatCannotBeFoundHasNoAlternatives() =>
+        Assert.Empty(HaAddress.Alternatives("http://nowhere.local:8123", _ => []));
+
+    // The dashboard widget signs in with the token from Settings: the phone gets it only for such a widget of its own
+    // pages (also a Smart Stack card) that asks for it, and is told when Settings has no token.
+    [Theory]
+    [InlineData("""{ "id": "d", "type": "hadash", "x": 0, "y": 0, "w": 12, "h": 6 }""", "p/d", "secret-ha-token", 200)]
+    [InlineData("""{ "id": "d", "type": "hadash", "x": 0, "y": 0, "w": 12, "h": 6, "options": { "signIn": "token" } }""", "p/d", "secret-ha-token", 200)]
+    [InlineData("""{ "id": "s", "type": "stack", "x": 0, "y": 0, "w": 6, "h": 3, "options": { "widgets": [ { "id": "a", "type": "hadash" } ] } }""", "p/s:a", "secret-ha-token", 200)]
+    [InlineData("""{ "id": "d", "type": "hadash", "x": 0, "y": 0, "w": 12, "h": 6, "options": { "signIn": "ha" } }""", "p/d", "secret-ha-token", 403)]
+    [InlineData("""{ "id": "d", "type": "ha", "x": 0, "y": 0, "w": 6, "h": 3 }""", "p/d", "secret-ha-token", 404)]
+    [InlineData("""{ "id": "d", "type": "hadash", "x": 0, "y": 0, "w": 12, "h": 6 }""", "p/other", "secret-ha-token", 404)]
+    [InlineData("""{ "id": "d", "type": "hadash", "x": 0, "y": 0, "w": 12, "h": 6 }""", "p/d", "", 409)]
+    public void TheDashboardWidgetGetsTheTokenOnlyWhenItSignsInWithIt(string widget, string key, string token, int status)
+    {
+        var c = Load($$"""
+        { "homeAssistant": { "url": "http://192.168.1.10:8123", "token": "{{token}}" },
+          "pages": [ { "id": "p", "title": "P", "widgets": [ {{widget}} ] } ] }
+        """);
+        var (got, body) = HomeAssistant.FrameSignIn(c, null, key);
+        Assert.Equal(status, got);
+        Assert.Equal(status == 200, JsonSerializer.Serialize(body).Contains("secret-ha-token"));
+    }
+
     [Fact]
     public void ThePhoneLearnsWhichShortcutPicturesAreUploads()
     {
