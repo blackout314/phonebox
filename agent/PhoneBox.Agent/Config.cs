@@ -356,12 +356,20 @@ public sealed class ClaudeConfig
     public int TimeoutSec { get; set; } = 90;
     /// <summary>Let the phone open a Claude Code session's recent messages and steps, read from its chat file on this
     /// computer. They are your prompts and Claude's replies, so this stays off until you turn it on.</summary>
-    public bool ShareConversation { get; set; }
+    // Fork: keep this off. When on, the phone gets your prompts, Claude's replies and the tool steps read from Claude
+    // Code's chat files: work code, file paths, internal names and anything pasted into a prompt (tokens, customer
+    // data) end up on the phone, readable by anyone holding it unlocked and kept in the app's storage. Turn it on only
+    // on a machine with no work material.
+    public bool ShareConversation { get; set; } = false;
     /// <summary>Only use the phone when the PC has been idle for a minute (you are away from the keyboard).</summary>
     public bool OnlyWhenAway { get; set; }
     /// <summary>Show each Claude Code chat's title on the phone. The title is the name you gave the chat or the one
     /// Claude Code wrote, which it often draws from your first prompt, so it stays off until you turn it on.</summary>
-    public bool ShareSessionTitles { get; set; }
+    // Fork: keep this off. When on, the phone gets each chat's title, often drawn from the first prompt, read from the
+    // coding agent's local files: work code, file paths, internal names and anything pasted into a prompt (tokens,
+    // customer data) end up on the phone, readable by anyone holding it unlocked and kept in the app's storage. Turn
+    // it on only on a machine with no work material.
+    public bool ShareSessionTitles { get; set; } = false;
     /// <summary>Windows: also show the Claude Code sessions (and use the sign-in for the quota, when Windows has none)
     /// of the running WSL distros' default users. A stopped distro is never started for it (off by default).</summary>
     public bool WatchWsl { get; set; }
@@ -413,7 +421,11 @@ public sealed class AntigravityConfig
     /// <summary>Show recent Antigravity chats on the AI sessions widget (off by default).</summary>
     public bool Sessions { get; set; }
     /// <summary>Show each Antigravity chat's title from its local annotation file on the phone (off by default).</summary>
-    public bool ShareSessionTitles { get; set; }
+    // Fork: keep this off. When on, the phone gets each chat's title, often drawn from the first prompt, read from the
+    // coding agent's local files: work code, file paths, internal names and anything pasted into a prompt (tokens,
+    // customer data) end up on the phone, readable by anyone holding it unlocked and kept in the app's storage. Turn
+    // it on only on a machine with no work material.
+    public bool ShareSessionTitles { get; set; } = false;
 }
 
 /// <summary>WorkBuddy: permission prompts reuse the Claude Code hook protocol (its own settings file),
@@ -448,7 +460,11 @@ public sealed class OpenCodeConfig
     public bool WatchWsl { get; set; }
     /// <summary>Show each OpenCode session's title on the phone. OpenCode draws the titles from the conversation,
     /// so they stay off the phone until you turn this on, like Claude's shareSessionTitles.</summary>
-    public bool ShareSessionTitles { get; set; }
+    // Fork: keep this off. When on, the phone gets each chat's title, often drawn from the first prompt, read from the
+    // coding agent's local files: work code, file paths, internal names and anything pasted into a prompt (tokens,
+    // customer data) end up on the phone, readable by anyone holding it unlocked and kept in the app's storage. Turn
+    // it on only on a machine with no work material.
+    public bool ShareSessionTitles { get; set; } = false;
 }
 
 /// <summary>
