@@ -4,8 +4,11 @@
 
 **Widgets**
 - **Home Assistant dashboard**: a Home Assistant dashboard as it is, with its own cards. The phone opens it from the
-  server in Settings › General (or an address of its own) and signs in as a Home Assistant user; the agent's token
-  stays on the computer and only lists the dashboards and views to pick from in the widget's settings. While the server
+  server in Settings › General (or an address of its own) and signs in with the token from there, the way Home
+  Assistant's own app does: no password on the phone and no trusted network (or, per widget, with Home Assistant's
+  own sign-in). The agent gives the token only to such a widget, and the app only to that server's pages. The widget
+  hides Home Assistant's header and sidebar with kiosk-mode, and its settings list the dashboards and views to pick
+  from, with what Home Assistant needs. While the server
   does not answer, the widget says so and tries again. See [docs/HOME-ASSISTANT.md](docs/HOME-ASSISTANT.md).
 - Custom HTML: **Web page address** shows a web page instead of your own HTML, such as a Home Assistant dashboard,
   Grafana or a camera on the home network. Plain http addresses work too (the panel is now served over http inside
